@@ -15,6 +15,7 @@ import { MockV3Aggregator } from "../mocks/MockV3Aggregator.sol";
 import { LendingCore } from "src/LendingCore.sol";
 import { Errors } from "src/libraries/Errors.sol";
 import { MockFailedTransferFrom } from "test/mocks/MockFailedTransferFrom.sol";
+import { OracleLib } from "src/libraries/OracleLib.sol";
 
 contract LendingCore_IntegrationsTest is Test {
     LendingCore lendingCore;
@@ -102,6 +103,92 @@ contract LendingCore_IntegrationsTest is Test {
         // Expect revert when arrays don't match in length
         vm.expectRevert(Errors.CoreStorage__TokenAddressesAndPriceFeedAddressesMustBeSameLength.selector);
         new CoreStorage(tokenAddresses, feedAddresses);
+    }
+
+    function testGetCollateralBalanceOfUser() public UserDeposited {
+        uint256 balance = lendingCore.getCollateralBalanceOfUser(user, weth);
+        assertEq(balance, DEPOSIT_AMOUNT);
+    }
+
+    function testGetCollateralTokenPriceFeed() public view {
+        // Get the price feed address for WETH token
+        address priceFeed = lendingCore.getCollateralTokenPriceFeed(weth);
+        // Verify it matches the expected WETH/USD price feed address
+        assertEq(priceFeed, wethUsdPriceFeed);
+    }
+
+    // Tests that the array of collateral tokens contains the expected tokens
+    function testAllowedTokens() public view {
+        // Get the array of allowed collateral tokens
+        address[] memory collateralTokens = lendingCore.getAllowedTokens();
+        // Verify WETH is at index 0 (first and only token in this test)
+        assertEq(collateralTokens[0], weth);
+        assertEq(collateralTokens[1], wbtc);
+        assertEq(collateralTokens[2], link);
+    }
+
+    function testAdditionalFeedPrecision() public view {
+        uint256 feedPrecision = 1e10;
+
+        uint256 additionalFeedPrecision = lendingCore.getAdditionalFeedPrecision();
+        assertEq(additionalFeedPrecision, feedPrecision);
+    }
+
+    function testLiquidationThreshold() public view {
+        uint256 liquidationThreshold = 50;
+        uint256 getLiquidationThreshold = lendingCore.getLiquidationThreshold();
+        assertEq(getLiquidationThreshold, liquidationThreshold);
+    }
+
+    function testLiquidationPrecision() public view {
+        uint256 liquidationPrecision = 100;
+        assertEq(lendingCore.getLiquidationPrecision(), liquidationPrecision);
+    }
+
+    function testPrecision() public view {
+        uint256 presicion = 1e18;
+        assertEq(lendingCore.getPrecision(), presicion);
+    }
+
+    function testGetMinimumHealthFactor() public view {
+        uint256 minimumHealthFactor = 1;
+        assertEq(lendingCore.getMinimumHealthFactor(), minimumHealthFactor);
+    }
+
+    function testGetLiquidationBonus() public view {
+        uint256 liquidationBonus = 10;
+        assertEq(lendingCore.getLiquidationBonus(), liquidationBonus);
+    }
+
+    /**
+     * @notice Tests the conversion from token amount to USD value
+     * @dev Verifies that getUsdValue correctly calculates USD value based on price feeds
+     * Test sequence:
+     * 1. Set test amount to 15 ETH
+     * 2. With ETH price at $2000 (from mock), expect $30,000
+     * 3. Compare actual result with expected value
+     */
+    function testGetUsdValue() public view {
+        uint256 ethAmount = 15e18; // 15 ETH
+        // 15e18 ETH * $2000/ETH = $30,000e18
+        uint256 expectedUsd = 30_000e18; // $30,000 in USD
+        uint256 usdValue = lendingCore.getUsdValue(weth, ethAmount);
+        assertEq(usdValue, expectedUsd);
+    }
+
+    /**
+     * @notice Tests the conversion from USD value to token amount
+     * @dev Verifies that getTokenAmountFromUsd correctly calculates token amounts based on price feeds
+     * Test sequence:
+     * 1. Request conversion of $100 worth of WETH
+     * 2. With ETH price at $2000 (from mock), expect 0.05 WETH
+     * 3. Compare actual result with expected amount
+     */
+    function testGetTokenAmountFromUsd() public view {
+        // If we want $100 of WETH @ $2000/WETH, that would be 0.05 WETH
+        uint256 expectedWeth = 0.05 ether;
+        uint256 amountWeth = lendingCore.getTokenAmountFromUsd(weth, 100 ether);
+        assertEq(amountWeth, expectedWeth);
     }
 
     ///////////////////////////
@@ -259,4 +346,42 @@ contract LendingCore_IntegrationsTest is Test {
     /////////////////////////////
     //  BorrowingEngine Tests  //
     ////////////////////////////
+
+    /////////////////////
+    //  LendingCore Tests  //
+    ///////////////////
+
+    /**
+     * @notice Tests that the constructor properly initializes tokens and their price feeds
+     * @dev This test verifies:
+     * 1. The correct number of tokens are initialized
+     * 2. Each token is properly mapped to its corresponding price feed
+     * 3. All three tokens (WETH, WBTC, LINK) are registered with correct price feeds
+     * Test sequence:
+     * 1. Get array of allowed tokens
+     * 2. Verify array length
+     * 3. For each token, verify its price feed mapping
+     */
+    function testConstructorInitializesTokensAndPriceFeeds() public view {
+        // Get the allowed tokens array
+        address[] memory allowedTokens = lendingCore.getAllowedTokens();
+
+        // Check array length matches our setup
+        assertEq(allowedTokens.length, 3, "Should have 3 allowed tokens");
+
+        // Check each token is properly registered with its price feed
+        for (uint256 i = 0; i < allowedTokens.length; i++) {
+            // Get the price feed for this token
+            address priceFeed = lendingCore.getCollateralTokenPriceFeed(allowedTokens[i]);
+
+            // Verify token and price feed pairs match our setup
+            if (allowedTokens[i] == weth) {
+                assertEq(priceFeed, wethUsdPriceFeed, "WETH price feed mismatch");
+            } else if (allowedTokens[i] == wbtc) {
+                assertEq(priceFeed, btcUsdPriceFeed, "WBTC price feed mismatch");
+            } else if (allowedTokens[i] == link) {
+                assertEq(priceFeed, linkUsdPriceFeed, "LINK price feed mismatch");
+            }
+        }
+    }
 }
