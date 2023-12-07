@@ -18,6 +18,7 @@ import { MockFailedTransferFrom } from "test/mocks/MockFailedTransferFrom.sol";
 import { MockBorrowing } from "test/mocks/MockBorrowing.sol";
 import { OracleLib } from "src/libraries/OracleLib.sol";
 import { Borrowing } from "src/Borrowing.sol";
+import { MockWithdraw } from "test/mocks/MockWithdraw.sol";
 
 contract LendingCore_IntegrationsTest is Test {
     LendingCore lendingCore;
@@ -52,6 +53,8 @@ contract LendingCore_IntegrationsTest is Test {
     event BorrowedAmountRepaid(
         address indexed payer, address indexed onBehalfOf, address indexed token, uint256 amount
     );
+
+    event CollateralWithdrawn(address indexed token, uint256 amount, address indexed WithdrawnFrom, address WithdrawTo);
 
     function setUp() external {
         // Create a new instance of the deployment script
@@ -328,6 +331,13 @@ contract LendingCore_IntegrationsTest is Test {
         assertEq(healthFactor, expectedHealthFactor);
     }
 
+    function testUserHealthIsMaxWhenUserHasNotDeposited() public view {
+        uint256 expectedHealthFactor = type(uint256).max;
+        uint256 healthFactor = lendingCore.getHealthFactor(user);
+
+        assertEq(healthFactor, expectedHealthFactor);
+    }
+
     function testGetAccountCollateralValueInUsd() public UserDeposited {
         // Start impersonating our test user
         vm.startPrank(user);
@@ -583,7 +593,7 @@ contract LendingCore_IntegrationsTest is Test {
         mockDeposit.approve(address(mockLendingCore), DEPOSIT_AMOUNT);
 
         // Expect the transaction to revert with TransferFailed error
-        vm.expectRevert(Errors.Lending__TransferFailed.selector);
+        vm.expectRevert(Errors.TransferFailed.selector);
         // Attempt to deposit collateral (this should fail)
         mockLendingCore.depositCollateral(address(mockDeposit), DEPOSIT_AMOUNT);
 
@@ -785,7 +795,7 @@ contract LendingCore_IntegrationsTest is Test {
         mockLendingCore.depositCollateral(address(mockBorrowing), DEPOSIT_AMOUNT);
 
         // Expect the transaction to revert with TransferFailed error
-        vm.expectRevert(Errors.Borrowing__TransferFailed.selector);
+        vm.expectRevert(Errors.TransferFailed.selector);
         mockBorrowing.borrowFunds(link, LINK_AMOUNT_TO_BORROW);
         // Stop impersonating the user
         vm.stopPrank();
@@ -840,7 +850,7 @@ contract LendingCore_IntegrationsTest is Test {
         vm.startPrank(user);
 
         // Expect revert with TokenNotAllowed error when trying to deposit unapproved token
-        vm.expectRevert(Errors.Borrowing__ZeroAddressNotAllowed.selector);
+        vm.expectRevert(Errors.ZeroAddressNotAllowed.selector);
         // Attempt to payback on behalf of the zero address (this should fail)
         lendingCore.paybackBorrowedAmount(link, LINK_AMOUNT_TO_BORROW, address(0));
 
@@ -848,8 +858,26 @@ contract LendingCore_IntegrationsTest is Test {
         vm.stopPrank();
     }
 
+    function testBorrowing__NotEnoughTokensToPayDebt() public UserDepositedAndBorrowedLink {
+        uint256 overpayAmountToPayBack = 10_000e18;
+
+        // Start impersonating our test user
+        vm.startPrank(user);
+
+        // Expect revert with Borrowing__NotEnoughTokensToPayDebt error when trying to deposit unapproved token
+        vm.expectRevert(Errors.Borrowing__NotEnoughTokensToPayDebt.selector);
+        // Attempt to payback too much (this should fail)
+        lendingCore.paybackBorrowedAmount(link, overpayAmountToPayBack, user);
+
+        // Stop impersonating the user
+        vm.stopPrank();
+    }
+
     function testPaybackBorrowedAmountRevertsWhenUserOverPaysDebt() public UserDepositedAndBorrowedLink {
         uint256 overpayAmountToPayBack = 10_000e18;
+
+        ERC20Mock(link).mint(user, overpayAmountToPayBack);
+
         // Start impersonating our test user
         vm.startPrank(user);
 
@@ -980,7 +1008,7 @@ contract LendingCore_IntegrationsTest is Test {
         mockLendingCore.borrowFunds(address(mockBorrowing), WETH_AMOUNT_TO_BORROW);
 
         // Expect the transaction to revert with TransferFailed error
-        vm.expectRevert(Errors.Borrowing__TransferFailed.selector);
+        vm.expectRevert(Errors.TransferFailed.selector);
         mockBorrowing.paybackBorrowedAmount(address(mockBorrowing), amountToRepay, user);
 
         vm.stopPrank();
@@ -1013,38 +1041,6 @@ contract LendingCore_IntegrationsTest is Test {
         assertEq(actualCollateral, expectedCollateral);
     }
 
-    /////////////////////////
-    //  Liquidation Tests  //
-    /////////////////////////
-
-    function testLiquidationsConstructor() public {
-        // Create new arrays for tokens and price feeds
-        address[] memory testTokens = new address[](3);
-        testTokens[0] = weth;
-        testTokens[1] = wbtc;
-        testTokens[2] = link;
-
-        address[] memory testFeeds = new address[](3);
-        testFeeds[0] = wethUsdPriceFeed;
-        testFeeds[1] = btcUsdPriceFeed;
-        testFeeds[2] = linkUsdPriceFeed;
-
-        // Deploy new HealthFactor instance
-        Liquidations liquidations = new Liquidations(testTokens, testFeeds);
-
-        // Verify initialization
-        address[] memory allowedTokens = liquidations.getAllowedTokens();
-        assertEq(allowedTokens.length, 3, "Should have 3 allowed tokens");
-        assertEq(allowedTokens[0], weth, "First token should be WETH");
-        assertEq(allowedTokens[1], wbtc, "Second token should be WBTC");
-        assertEq(allowedTokens[2], link, "Third token should be LINK");
-
-        // Verify price feed mappings
-        assertEq(liquidations.getCollateralTokenPriceFeed(weth), wethUsdPriceFeed, "WETH price feed mismatch");
-        assertEq(liquidations.getCollateralTokenPriceFeed(wbtc), btcUsdPriceFeed, "WBTC price feed mismatch");
-        assertEq(liquidations.getCollateralTokenPriceFeed(link), linkUsdPriceFeed, "LINK price feed mismatch");
-    }
-
     ///////////////////////////
     //     Withdraw Tests    //
     //////////////////////////
@@ -1075,6 +1071,222 @@ contract LendingCore_IntegrationsTest is Test {
         assertEq(withdraw.getCollateralTokenPriceFeed(weth), wethUsdPriceFeed, "WETH price feed mismatch");
         assertEq(withdraw.getCollateralTokenPriceFeed(wbtc), btcUsdPriceFeed, "WBTC price feed mismatch");
         assertEq(withdraw.getCollateralTokenPriceFeed(link), linkUsdPriceFeed, "LINK price feed mismatch");
+    }
+
+
+
+    modifier UserBorrowedAndRepaidDebt() {
+        // Start impersonating the test user
+        vm.startPrank(user);
+        // Approve the lendingCore contract to spend user's WETH
+        // User deposits $10,000
+        ERC20Mock(weth).approve(address(lendingCore), DEPOSIT_AMOUNT);
+
+        lendingCore.depositCollateral(weth, DEPOSIT_AMOUNT);
+
+        // Deposit collateral and borrow link in one transaction
+        // link is $10/token, user borrows 10, so thats $100 borrowed
+        lendingCore.borrowFunds(link, LINK_AMOUNT_TO_BORROW);
+        ERC20Mock(link).approve(address(lendingCore), LINK_AMOUNT_TO_BORROW);
+
+        lendingCore.paybackBorrowedAmount(link, LINK_AMOUNT_TO_BORROW, user);
+        // Stop impersonating the user
+        vm.stopPrank();
+        _;
+    }
+
+    function testUserCanDepositAndWithdrawImmediately() public UserDeposited {
+        uint256 expectedWithdrawAmount = 5 ether;
+        uint256 balanceBeforeWithdrawal = ERC20Mock(weth).balanceOf(user);
+        vm.startPrank(user);
+
+        lendingCore.withdrawCollateral(weth, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+
+        uint256 balanceAfterWithdrawal = ERC20Mock(weth).balanceOf(user);
+
+        assert(balanceAfterWithdrawal > balanceBeforeWithdrawal);
+        assertEq(balanceAfterWithdrawal - balanceBeforeWithdrawal, expectedWithdrawAmount);
+    }
+
+    function testWithdrawRevertsIfAmountIsZero() public UserBorrowedAndRepaidDebt {
+        uint256 zeroAmountWithdraw = 0;
+        vm.startPrank(user);
+        vm.expectRevert(Errors.AmountNeedsMoreThanZero.selector);
+        lendingCore.withdrawCollateral(weth, zeroAmountWithdraw);
+        vm.stopPrank();
+    }
+
+    function testRevertsIfTokenIsNotAllowed() public UserBorrowedAndRepaidDebt {
+        // Create a new random ERC20 token
+        ERC20Mock dogToken = new ERC20Mock("DOG", "DOG", user, 100e18);
+
+        // Start impersonating our test user
+        vm.startPrank(user);
+
+        // Expect revert with TokenNotAllowed error when trying to borrow unapproved token
+        vm.expectRevert(abi.encodeWithSelector(Errors.TokenNotAllowed.selector, address(dogToken)));
+        // Attempt to borrow unapproved token  (this should fail)
+        lendingCore.withdrawCollateral(address(dogToken), DEPOSIT_AMOUNT);
+
+        // Stop impersonating the user
+        vm.stopPrank();
+    }
+
+    function testRevertsWhenWithdrawingFromZeroAddress() public {
+        // Try to withdraw from address(0)
+        vm.startPrank(address(0));
+        vm.expectRevert(Errors.ZeroAddressNotAllowed.selector);
+        lendingCore.withdrawCollateral(weth, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+    }
+
+    function testRevertsIfUserHasNoCollateralDeposited() public {
+        vm.startPrank(user);
+        vm.expectRevert(Errors.UserHasNoCollateralDeposited.selector);
+        lendingCore.withdrawCollateral(weth, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+    }
+
+    function testRevertsIfUserWithdrawsMoreThanDeposited() public UserBorrowedAndRepaidDebt {
+        uint256 moreThanDeposited = 20 ether;
+        vm.startPrank(user);
+        vm.expectRevert(Errors.Withdraw__UserDoesNotHaveThatManyTokens.selector);
+        lendingCore.withdrawCollateral(weth, moreThanDeposited);
+        vm.stopPrank();
+    }
+
+    function testDecreaseCollateralDepositedWhenWithdrawing() public UserBorrowedAndRepaidDebt {
+        uint256 usersCollateralBalanceBeforeWithdraw = lendingCore.getCollateralBalanceOfUser(user, weth);
+        vm.startPrank(user);
+
+        lendingCore.withdrawCollateral(weth, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+
+        uint256 usersCollateralBalanceAfterWithdraw = lendingCore.getCollateralBalanceOfUser(user, weth);
+
+        assert(usersCollateralBalanceAfterWithdraw < usersCollateralBalanceBeforeWithdraw);
+
+        assertEq(usersCollateralBalanceAfterWithdraw, 0);
+    }
+
+    function testWithdrawsEmitEvent() public UserBorrowedAndRepaidDebt {
+        vm.startPrank(user);
+        vm.expectEmit(true, true, true, false, address(lendingCore));
+        emit CollateralWithdrawn(weth, DEPOSIT_AMOUNT, user, user);
+        lendingCore.withdrawCollateral(weth, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+    }
+
+    function testWithdrawCollateralAfterRepayingDebt() public UserBorrowedAndRepaidDebt {
+        uint256 expectedWithdrawAmount = 5 ether;
+        uint256 balanceBeforeWithdrawal = ERC20Mock(weth).balanceOf(user);
+        vm.startPrank(user);
+
+        lendingCore.withdrawCollateral(weth, DEPOSIT_AMOUNT);
+        vm.stopPrank();
+
+        uint256 balanceAfterWithdrawal = ERC20Mock(weth).balanceOf(user);
+
+        assert(balanceAfterWithdrawal > balanceBeforeWithdrawal);
+        assertEq(balanceAfterWithdrawal - balanceBeforeWithdrawal, expectedWithdrawAmount);
+    }
+
+    function testRevertsIfWithdrawFails() public {
+        // Setup - Get the owner's address (msg.sender in this context)
+        address owner = msg.sender;
+
+        // Create new mock token contract that will fail transfers, deployed by owner
+        vm.prank(owner);
+        MockWithdraw mockWithdraw = new MockWithdraw();
+
+        // Setup array with mock token as only allowed collateral
+        tokenAddresses = [address(mockWithdraw)];
+        // Setup array with WETH price feed for the mock token
+        feedAddresses = [wethUsdPriceFeed];
+
+        // Deploy new LendingCore instance with mock token as allowed collateral
+        vm.prank(owner);
+        LendingCore mockLendingCore = new LendingCore(tokenAddresses, feedAddresses);
+
+        // Mint some mock tokens to our test user
+        mockWithdraw.mint(user, DEPOSIT_AMOUNT);
+
+        // Transfer ownership of mock token to LendingCore
+        vm.prank(owner);
+        mockWithdraw.transferOwnership(address(mockLendingCore));
+
+        // Start impersonating our test user
+        vm.startPrank(user);
+        // Approve LendingCore to spend user's tokens
+        mockWithdraw.approve(address(mockLendingCore), DEPOSIT_AMOUNT);
+
+        // deposit collateral
+        mockLendingCore.depositCollateral(address(mockWithdraw), DEPOSIT_AMOUNT);
+
+        // Expect the transaction to revert with TransferFailed error
+        vm.expectRevert(Errors.TransferFailed.selector);
+        mockWithdraw.withdrawCollateral(link, LINK_AMOUNT_TO_BORROW);
+        // Stop impersonating the user
+        vm.stopPrank();
+    }
+
+    function testRevertsIfWithdrawBreaksHealthFactor() public LiquidLendingCore {
+        uint256 amountToBorrow = 500e18;
+        uint256 thisWithdrawAmountBreaksHealthFactor = 1 ether;
+        uint256 expectedHealthFactor = 8e17; // 0.8 ether (health factor of 0.8)
+
+        // Start impersonating the test user
+        vm.startPrank(user);
+        // Approve the lendingCore contract to spend user's WETH
+        // User deposits $10,000
+        ERC20Mock(weth).approve(address(lendingCore), DEPOSIT_AMOUNT);
+
+        lendingCore.depositCollateral(weth, DEPOSIT_AMOUNT);
+
+        // Deposit collateral and borrow link in one transaction
+        // link is $10/token, user borrows 10, so thats $100 borrowed
+        lendingCore.borrowFunds(link, amountToBorrow);
+        // Stop impersonating the user
+        vm.stopPrank();
+
+
+        vm.startPrank(user);
+        vm.expectRevert(abi.encodeWithSelector(Errors.HealthFactor__BreaksHealthFactor.selector, expectedHealthFactor));        lendingCore.withdrawCollateral(weth, thisWithdrawAmountBreaksHealthFactor);
+        vm.stopPrank();
+        
+    }
+
+    /////////////////////////
+    //  Liquidation Tests  //
+    /////////////////////////
+
+    function testLiquidationsConstructor() public {
+        // Create new arrays for tokens and price feeds
+        address[] memory testTokens = new address[](3);
+        testTokens[0] = weth;
+        testTokens[1] = wbtc;
+        testTokens[2] = link;
+
+        address[] memory testFeeds = new address[](3);
+        testFeeds[0] = wethUsdPriceFeed;
+        testFeeds[1] = btcUsdPriceFeed;
+        testFeeds[2] = linkUsdPriceFeed;
+
+        // Deploy new HealthFactor instance
+        Liquidations liquidations = new Liquidations(testTokens, testFeeds);
+
+        // Verify initialization
+        address[] memory allowedTokens = liquidations.getAllowedTokens();
+        assertEq(allowedTokens.length, 3, "Should have 3 allowed tokens");
+        assertEq(allowedTokens[0], weth, "First token should be WETH");
+        assertEq(allowedTokens[1], wbtc, "Second token should be WBTC");
+        assertEq(allowedTokens[2], link, "Third token should be LINK");
+
+        // Verify price feed mappings
+        assertEq(liquidations.getCollateralTokenPriceFeed(weth), wethUsdPriceFeed, "WETH price feed mismatch");
+        assertEq(liquidations.getCollateralTokenPriceFeed(wbtc), btcUsdPriceFeed, "WBTC price feed mismatch");
+        assertEq(liquidations.getCollateralTokenPriceFeed(link), linkUsdPriceFeed, "LINK price feed mismatch");
     }
 
     //////////////////////////
