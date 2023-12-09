@@ -1146,7 +1146,7 @@ contract LendingCore_IntegrationsTest is Test {
 
     function testRevertsIfUserHasNoCollateralDeposited() public {
         vm.startPrank(user);
-        vm.expectRevert(Errors.UserHasNoCollateralDeposited.selector);
+        vm.expectRevert(Errors.Withdraw__UserHasNoCollateralDeposited.selector);
         lendingCore.withdrawCollateral(weth, DEPOSIT_AMOUNT);
         vm.stopPrank();
     }
@@ -1291,7 +1291,7 @@ contract LendingCore_IntegrationsTest is Test {
         assertEq(liquidations.getCollateralTokenPriceFeed(link), linkUsdPriceFeed, "LINK price feed mismatch");
     }
 
-    modifier UserCanBeLiquidated() {
+    modifier UserCanBeLiquidatedWithNoBonus() {
         // Start impersonating the test user
         vm.startPrank(user);
         // Approve the lendingCore contract to spend user's WETH
@@ -1306,8 +1306,8 @@ contract LendingCore_IntegrationsTest is Test {
         // Stop impersonating the user
         vm.stopPrank();
 
-        // Set new ETH price to $1000 (significant drop from original price)
-        int256 wethUsdUpdatedPrice = 190e8; // 1 ETH = $1000
+        // Set new ETH price to $20 (significant drop from original price)
+        int256 wethUsdUpdatedPrice = 20e8; // 1 ETH = $20
 
         // we need $200 of collateral at all times if we have $100 of debt
         // Update the ETH/USD price feed with new lower price
@@ -1319,10 +1319,10 @@ contract LendingCore_IntegrationsTest is Test {
     function testLiquidationsRevertsIfAmountIsZero() public {
         vm.prank(liquidator);
         vm.expectRevert(Errors.AmountNeedsMoreThanZero.selector);
-        lendingCore.liquidate(weth, user, 0);
+        lendingCore.liquidate(user, weth, link, 0);
     }
 
-    function testLiquidationsRevertsIfTokenIsNotAllowed() public {
+    function testLiquidationsRevertsIfCollateralTokenIsNotAllowed() public {
         // Create a new random ERC20 token
         ERC20Mock dogToken = new ERC20Mock("DOG", "DOG", user, 100e18);
 
@@ -1332,7 +1332,23 @@ contract LendingCore_IntegrationsTest is Test {
         // Expect revert with TokenNotAllowed error when trying to borrow unapproved token
         vm.expectRevert(abi.encodeWithSelector(Errors.TokenNotAllowed.selector, address(dogToken)));
         // Attempt to liquidate user with unapproved token  (this should fail)
-        lendingCore.liquidate(address(dogToken), user, DEPOSIT_AMOUNT);
+        lendingCore.liquidate(user, address(dogToken), link, DEPOSIT_AMOUNT);
+
+        // Stop impersonating the user
+        vm.stopPrank();
+    }
+
+    function testLiquidationsRevertsIfBorrowedTokenIsNotAllowed() public {
+        // Create a new random ERC20 token
+        ERC20Mock dogToken = new ERC20Mock("DOG", "DOG", user, 100e18);
+
+        // Start impersonating our test user
+        vm.startPrank(liquidator);
+
+        // Expect revert with TokenNotAllowed error when trying to borrow unapproved token
+        vm.expectRevert(abi.encodeWithSelector(Errors.TokenNotAllowed.selector, address(dogToken)));
+        // Attempt to liquidate user with unapproved token  (this should fail)
+        lendingCore.liquidate(user, weth, address(dogToken), DEPOSIT_AMOUNT);
 
         // Stop impersonating the user
         vm.stopPrank();
@@ -1341,26 +1357,26 @@ contract LendingCore_IntegrationsTest is Test {
     function testLiquidationRevertsIfUserIsZeroAddress() public {
         vm.prank(liquidator);
         vm.expectRevert(Errors.ZeroAddressNotAllowed.selector);
-        lendingCore.liquidate(weth, address(0), DEPOSIT_AMOUNT);
+        lendingCore.liquidate(address(0), weth, link, DEPOSIT_AMOUNT);
     }
 
     function testLiquidationRevertsIfUserSelfLiquidates() public {
         vm.prank(user);
         vm.expectRevert(Errors.Liquidations__CantLiquidateSelf.selector);
-        lendingCore.liquidate(weth, user, DEPOSIT_AMOUNT);
+        lendingCore.liquidate(user, weth, link, DEPOSIT_AMOUNT);
     }
 
-    function testLiquidationRevertsIfUserHasNoCollateralDeposited() public {
+    function testLiquidationRevertsIfUserHasNotBorrowedToken() public {
         vm.prank(liquidator);
-        vm.expectRevert(Errors.UserHasNoCollateralDeposited.selector);
-        lendingCore.liquidate(weth, user, DEPOSIT_AMOUNT);
+        vm.expectRevert(Errors.Liquidation__UserHasNotBorrowedToken.selector);
+        lendingCore.liquidate(user, weth, link, DEPOSIT_AMOUNT);
     }
 
-    function testLiquidationRevertsIfDebtAmountPaidExceedsCollateralAmount() public UserCanBeLiquidated {
+    function testLiquidationRevertsIfDebtAmountPaidExceedsCollateralAmount() public UserCanBeLiquidatedWithNoBonus {
         uint256 tooMuchToLiquidate = 20e18;
         vm.prank(liquidator);
-        vm.expectRevert(Errors.Liquidations__PaymentExceedsCollateralBalance.selector);
-        lendingCore.liquidate(weth, user, tooMuchToLiquidate);
+        vm.expectRevert(Errors.Liquidations__DebtAmountPaidExceedsBorrowedAmount.selector);
+        lendingCore.liquidate(user, weth, link, tooMuchToLiquidate);
     }
 
     function testLiquidationRevertsIfLiquidatorDoesNothaveEnoughTokens() public LiquidLendingCore {
@@ -1381,7 +1397,96 @@ contract LendingCore_IntegrationsTest is Test {
 
         vm.prank(liquidator);
         vm.expectRevert(Errors.Liquidations__InsufficientBalanceToLiquidate.selector);
-        lendingCore.liquidate(weth, user, tooMuchForLiquidator);
+        lendingCore.liquidate(user, weth, link, tooMuchForLiquidator);
+    }
+
+    function testLiquidationRevertsIfHealthFactorIsAboveOne() public UserDepositedAndBorrowedLink {
+        vm.prank(liquidator);
+        vm.expectRevert(Errors.Liquidations__HealthFactorIsHealthy.selector);
+        lendingCore.liquidate(user, weth, link, DEPOSIT_AMOUNT);
+    }
+
+    modifier UserCanBeLiquidatedWithBonus() {
+        ERC20Mock(link).mint(liquidator, 5000e18);
+
+        // Start impersonating the test user
+        vm.startPrank(user);
+        // Approve the lendingCore contract to spend user's WETH
+        // User deposits $10,000
+        ERC20Mock(weth).approve(address(lendingCore), DEPOSIT_AMOUNT);
+
+        lendingCore.depositCollateral(weth, DEPOSIT_AMOUNT);
+
+        // Deposit collateral and borrow link in one transaction
+        // link is $10/token, user borrows 100, so thats $1000 borrowed
+        lendingCore.borrowFunds(link, 100e18);
+        // Stop impersonating the user
+        vm.stopPrank();
+
+        // Set new ETH price to $300 (significant drop from original price)
+        int256 wethUsdUpdatedPrice = 300e8; // 1 ETH = $300
+
+        // we need $200 of collateral at all times if we have $100 of debt
+        // Update the ETH/USD price feed with new lower price
+        MockV3Aggregator(wethUsdPriceFeed).updateAnswer(wethUsdUpdatedPrice);
+
+        uint256 liquidatorBalanceBefore = ERC20Mock(weth).balanceOf(liquidator);
+
+        // user deposits are now worth 5 x 300 = 1500 USD
+        _;
+    }
+
+    function testLiquidationPaysLiquidatorBonusFromSelectedCollateral() public LiquidLendingCore UserCanBeLiquidatedWithBonus{
+        uint256 liquidatorBalanceBefore = ERC20Mock(weth).balanceOf(liquidator);
+        uint256 expectedDebtAmountToPay = 100e18;
+        uint256 expectedBonus = lendingCore.getTokenAmountFromUsd(weth, lendingCore.getUsdValue(link, 110e18));
+        vm.startPrank(liquidator);
+        ERC20Mock(link).approve(address(lendingCore), expectedDebtAmountToPay);
+        lendingCore.liquidate(user, weth, link, expectedDebtAmountToPay);
+        vm.stopPrank();
+
+        uint256 liquidatorBalanceAfter = ERC20Mock(weth).balanceOf(liquidator);
+
+        uint256 actualBonus = liquidatorBalanceAfter - liquidatorBalanceBefore;
+
+        assertEq(actualBonus, expectedBonus);
+    }
+
+    function testLiquidationPaysLiquidatorBonusFromAllCollaterals() public { }
+
+    function testLiquidationCompletedByProtocol() public { }
+
+    function testLiquidationEmitsEvent() public { }
+
+    function testLiquidationRevertsIfTransferFails() public { }
+
+    function testLiquidationDecreasesUsersBorrowedAmount() public { }
+
+    function testLiquidationDecreasesUsersCollateral() public { }
+
+    function testLiquidationRevertsIfEndingHealthFactorIsWorseThanStarting() public { }
+
+    function testLiquidationRevertsLiquidationBreaksHealthFactor() public UserCanBeLiquidatedWithNoBonus {
+        uint256 expectedHealthFactor = 5e16;
+
+        vm.startPrank(liquidator);
+
+        // Approve LINK for liquidation
+        ERC20Mock(link).approve(address(lendingCore), 9e18);
+
+        // This reverts because liquidating 9 LINK would leave user with:
+        // - 0.05 WETH ($1 at $20/ETH) as collateral
+        // - 1 LINK ($10) still borrowed
+        // Making health factor = 0.05 which is < 1
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.HealthFactor__BreaksHealthFactor.selector,
+                expectedHealthFactor // 0.05
+            )
+        );
+        lendingCore.liquidate(user, weth, link, 9e18);
+
+        vm.stopPrank();
     }
 
     //////////////////////////
