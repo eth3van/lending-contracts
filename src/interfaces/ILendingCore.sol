@@ -47,4 +47,6 @@ interface ILendingCore {
         address liquidator
     )
         external;
+
+    function owner() external view returns (address);
 }
