@@ -7,7 +7,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import { IAutomationRegistryInterface } from "src/interfaces/IAutomationRegistryInterface.sol";
 import { ILendingCore } from "../interfaces/ILendingCore.sol";
-import { SwapLiquidatedTokens } from "src/SwapLiquidatedTokens.sol";
+import { SwapLiquidatedTokens } from "./SwapLiquidatedTokens.sol";
 import { LiquidationCore } from "./LiquidationCore.sol";
 
 /**
