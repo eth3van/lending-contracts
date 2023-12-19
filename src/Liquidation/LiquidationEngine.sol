@@ -119,14 +119,12 @@ contract LiquidationEngine is LiquidationCore, ReentrancyGuard {
     constructor(
         address lendingCoreAddress,
         address swapRouterAddress,
-        address automationRegistry,
-        uint256 upkeepId
+        address automationRegistry
     )
         LiquidationCore(lendingCoreAddress)
     {
         i_swapRouter = SwapLiquidatedTokens(swapRouterAddress);
         i_automationRegistry = IAutomationRegistryInterface(automationRegistry);
-        i_upkeepId = upkeepId;
     }
 
     /*//////////////////////////////////////////////////////////////
